@@ -8,33 +8,48 @@ from .SolarPowerPlant import SolarPowerPlant
 
 logger = logging.getLogger(__name__)
 
-def fetch_open_meteo_data(latitude, longitude, start_dt, end_dt):
-    url = "https://api.open-meteo.com/v1/forecast"
+FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+# Archive of past forecast runs, same parameters and also 15 min data
+HISTORICAL_FORECAST_URL = "https://historical-forecast-api.open-meteo.com/v1/forecast"
+
+def fetch_open_meteo_data(latitude, longitude, start_dt, end_dt, intervalSeconds=3600, historical=False):
+    # Weather from Open-Meteo, one row per interval. "time" is the end of the interval (UTC);
+    # the radiation values are the mean over the preceding interval.
+    # intervalSeconds: 3600 (hourly) or 900 (15 min data, "minutely_15")
+    # historical: use the archive of past forecasts instead of the current forecast
+    if intervalSeconds == 3600:
+        resolution = "hourly"
+    elif intervalSeconds == 900:
+        resolution = "minutely_15"
+    else:
+        raise ValueError("intervalSeconds must be 3600 or 900")
+    rangeSuffix = "hour" if resolution == "hourly" else resolution
+    url = HISTORICAL_FORECAST_URL if historical else FORECAST_URL
     params = {
         "latitude": latitude,
         "longitude": longitude,
-        "hourly": "direct_normal_irradiance,diffuse_radiation,shortwave_radiation,temperature_2m",
-        "start_hour": start_dt.strftime("%Y-%m-%dT%H:%M"),  # both ends are included
-        "end_hour": end_dt.strftime("%Y-%m-%dT%H:%M"),
+        resolution: "direct_normal_irradiance,diffuse_radiation,shortwave_radiation,temperature_2m",
+        f"start_{rangeSuffix}": start_dt.strftime("%Y-%m-%dT%H:%M"),  # both ends are included
+        f"end_{rangeSuffix}": end_dt.strftime("%Y-%m-%dT%H:%M"),
         "timezone": "UTC"
     }
 
     full_url = requests.Request('GET', url, params=params).prepare().url
     logger.debug(f"🌐 API Request: {full_url}")
 
-    response = requests.get(url, params=params)
+    response = requests.get(url, params=params, timeout=30)
     response.raise_for_status()
     data = response.json()
 
     # Print a summary of the response
     logger.debug(f"📦 API Response Keys: {list(data.keys())}")
-    if "hourly" in data:
-        logger.debug(f"📊 Hourly Data Keys: {list(data['hourly'].keys())}")
-        logger.debug(f"🕒 Sample Times: {data['hourly']['time'][:3]} ...")
+    if resolution in data:
+        logger.debug(f"📊 {resolution} Data Keys: {list(data[resolution].keys())}")
+        logger.debug(f"🕒 Sample Times: {data[resolution]['time'][:3]} ...")
     else:
-        logger.warning("⚠️ No 'hourly' field in API response")
+        logger.warning(f"⚠️ No '{resolution}' field in API response")
 
-    df = pd.DataFrame(data["hourly"])
+    df = pd.DataFrame(data[resolution])
     df["time"] = pd.to_datetime(df["time"], utc=True)
     return df
 

@@ -18,14 +18,51 @@ APP_STEPS = 6
 SUBSTEP_SECONDS = 450
 
 
+def stepEpochs(midEpochs, intervalSeconds, beamMode):
+    # Points in time needed for each interval, one row per interval:
+    # column 0 is the middle of the interval, columns 1.. are the sub-steps.
+    if beamMode not in BEAM_MODES:
+        raise ValueError(f"beamMode must be one of {BEAM_MODES}, not {beamMode!r}")
+    if beamMode == "app":
+        if intervalSeconds != 3600:
+            raise ValueError("beamMode 'app' only supports hourly intervals")
+        numSteps = APP_STEPS
+    else:
+        if intervalSeconds % SUBSTEP_SECONDS:
+            raise ValueError(f"intervalSeconds must be a multiple of {SUBSTEP_SECONDS}")
+        numSteps = intervalSeconds // SUBSTEP_SECONDS
+    interval = intervalSeconds // numSteps  # seconds
+    offsets = [0] + [-((numSteps - 1) * interval // 2) + j * interval for j in range(numSteps)]
+    return np.asarray(midEpochs, dtype=np.int64)[:, None] + np.asarray(offsets, dtype=np.int64)[None, :]
+
+
+def solarPositions(latitude, longitude, epochs):
+    # Solar azimuth and elevation (degrees) for an array of Unix timestamps, in one pvlib call
+    epochs = np.asarray(epochs)
+    times = pd.to_datetime(epochs.ravel(), unit="s", utc=True)
+    solarPosition = pvlib.solarposition.get_solarposition(times, latitude, longitude)
+    return (solarPosition["azimuth"].to_numpy().reshape(epochs.shape),
+            solarPosition["elevation"].to_numpy().reshape(epochs.shape))
+
+
 class PanelArray:
     # One group of identical panels with the same orientation (e.g. one string).
     # Computes the DC power; the inverter is handled by the Inverter class.
-    def __init__(self, albedo, latitude, longitude, cellsMaxPower, cellsArea, cellsEfficiency,
+    # latitude/longitude are only needed when the array is used on its own (getDcPower,
+    # beamFactor); inside a Site the site's location is used.
+    def __init__(self, *, albedo, cellsMaxPower, cellsArea, cellsEfficiency,
                  cellsTempCoeff, diffuseEfficiency, azimuthAngle, tiltAngle,
-                 shadingElevation, shadingOpacity, beamMode="app"):
+                 shadingElevation, shadingOpacity, latitude=None, longitude=None,
+                 beamMode="app", name=""):
         if beamMode not in BEAM_MODES:
             raise ValueError(f"beamMode must be one of {BEAM_MODES}, not {beamMode!r}")
+        # settings as given (units as in solXpect), for saving
+        self.settings = dict(
+            name=name, albedo=albedo, cellsMaxPower=cellsMaxPower, cellsArea=cellsArea,
+            cellsEfficiency=cellsEfficiency, cellsTempCoeff=cellsTempCoeff,
+            diffuseEfficiency=diffuseEfficiency, azimuthAngle=azimuthAngle, tiltAngle=tiltAngle,
+            shadingElevation=list(shadingElevation), shadingOpacity=list(shadingOpacity))
+        self.name = name
         self.albedo = albedo  # fraction (e.g. 0.18), ground reflectivity
         self.latitude = latitude  # degrees
         self.longitude = longitude  # degrees
@@ -56,9 +93,13 @@ class PanelArray:
         # epochTimeSeconds: Unix timestamp, When you want to calculate the Energy between 9am and 10am you should give the function 9:30am
         # ambientTemperature: °C
         # intervalSeconds: length of the weather interval, 3600 for hourly or 900 for 15 min data ("substep" mode only)
-        efficiency = 0.0
-        if solarPowerNormal > 0:
-            efficiency = self.beamFactor(epochTimeSeconds, intervalSeconds)
+        beam = np.array([self.beamFactor(epochTimeSeconds, intervalSeconds)])
+        return float(self.getDcPowers(np.array([solarPowerNormal]), np.array([solarPowerDiffuse]),
+                                      np.array([shortwaveRadiation]), np.array([ambientTemperature]), beam)[0])
+
+    def getDcPowers(self, solarPowerNormal, solarPowerDiffuse, shortwaveRadiation, ambientTemperature, beamFactors):
+        # Same as getDcPower for arrays of intervals; beamFactors from getBeamFactors
+        efficiency = np.where(solarPowerNormal > 0, beamFactors, 0.0)
 
         # Calculate reflected radiation — flat plate equivalent
         tiltRad = math.radians(self.tiltAngle)
@@ -75,43 +116,32 @@ class PanelArray:
 
         # Calculate DC power (W)
         if self.cellsEfficiency != 0 and self.cellsArea != 0:
-            dcPower = totalIrradianceOnCell * (1 + (cellTemperature - 25) * self.cellsTempCoeff) * self.cellsEfficiency * self.cellsArea
-        else: #assume cellMaxPower is defined at 1000W/sqm
-            dcPower = totalIrradianceOnCell / 1000 * (1 + (cellTemperature - 25) * self.cellsTempCoeff) * self.cellsMaxPower
-
-        return float(dcPower)
+            return totalIrradianceOnCell * (1 + (cellTemperature - 25) * self.cellsTempCoeff) * self.cellsEfficiency * self.cellsArea
+        #assume cellMaxPower is defined at 1000W/sqm
+        return totalIrradianceOnCell / 1000 * (1 + (cellTemperature - 25) * self.cellsTempCoeff) * self.cellsMaxPower
 
     def beamFactor(self, epochTimeSeconds, intervalSeconds=3600):
         # Share of the direct normal irradiance that reaches the panel during the interval
         # around epochTimeSeconds (cosine of the angle of incidence, including shading).
-        if self.beamMode == "app":
-            if intervalSeconds != 3600:
-                raise ValueError("beamMode 'app' only supports hourly intervals")
-            numSteps = APP_STEPS
-        else:
-            if intervalSeconds % SUBSTEP_SECONDS:
-                raise ValueError(f"intervalSeconds must be a multiple of {SUBSTEP_SECONDS}")
-            numSteps = intervalSeconds // SUBSTEP_SECONDS
-        interval = intervalSeconds // numSteps  # seconds
-        stepEpochs = [epochTimeSeconds - ((numSteps - 1) * interval // 2) + j * interval for j in range(numSteps)]
+        epochs = stepEpochs([epochTimeSeconds], intervalSeconds, self.beamMode)
+        solarAzimuth, solarElevation = solarPositions(self.latitude, self.longitude, epochs)
+        return float(self.getBeamFactors(solarAzimuth, solarElevation)[0])
 
-        # One pvlib call for the middle of the hour and all sub-steps
-        times = pd.to_datetime([epochTimeSeconds] + stepEpochs, unit="s", utc=True)
-        solarPosition = pvlib.solarposition.get_solarposition(times, self.latitude, self.longitude)
-        solarAzimuth = solarPosition["azimuth"].to_numpy()  # degrees
-        solarElevation = solarPosition["elevation"].to_numpy()  # degrees
+    def getBeamFactors(self, solarAzimuth, solarElevation, beamMode=None):
+        # beamFactor for many intervals at once. solarAzimuth/solarElevation have one row per
+        # interval, laid out as by stepEpochs (column 0 = middle, columns 1.. = sub-steps).
+        beamMode = beamMode or self.beamMode
+        numSteps = solarAzimuth.shape[1] - 1
 
         # Scalar product of sun direction and panel normal, 0 if sun is behind panel
         cosIncidence = np.maximum(0.0, self.sunDirection(solarAzimuth, solarElevation) @ self.normalPanel)
-        shading = self.shadingFactors(solarAzimuth[1:], solarElevation[1:])
+        shading = self.shadingFactors(solarAzimuth[:, 1:], solarElevation[:, 1:])
 
-        if self.beamMode == "substep":
-            return float(np.sum(cosIncidence[1:] * shading) / numSteps)
+        if beamMode == "substep":
+            return np.sum(cosIncidence[:, 1:] * shading, axis=1) / numSteps
 
-        efficiency = cosIncidence[0]
-        if efficiency > 0:
-            efficiency *= np.sum(shading) / numSteps  # apply shading factor
-        return float(efficiency)
+        # app mode: angle at the middle of the hour times the averaged shading factor
+        return cosIncidence[:, 0] * (np.sum(shading, axis=1) / numSteps)
 
     def shadingFactors(self, solarAzimuth, solarElevation):
         # Share of light passing the shading (1 = unshaded) for each sun position.
@@ -122,14 +152,14 @@ class PanelArray:
 
     @staticmethod
     def sunDirection(solarAzimuth, solarElevation):
-        # Unit vectors pointing to the sun, one row per sun position
+        # Unit vectors pointing to the sun, last axis = (east, north, up)
         azimuth = np.radians(solarAzimuth)
         elevation = np.radians(solarElevation)
-        return np.column_stack([
+        return np.stack([
             np.sin(azimuth) * np.cos(elevation),
             np.cos(azimuth) * np.cos(elevation),
             np.sin(elevation)
-        ])
+        ], axis=-1)
 
     @staticmethod
     def calcCellTemperature(ambientTemperature, totalIrradiance):

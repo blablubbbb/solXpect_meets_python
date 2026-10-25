@@ -23,6 +23,36 @@ The goal is to provide a transparent, reproducible, and physically aligned imple
 | `PanelArray` | `calcs/PanelArray.py` | One group of panels with the same orientation (e.g. one string): sun position, angle of incidence, shading, temperature → **DC power** |
 | `Inverter` | `calcs/Inverter.py` | Efficiency and AC power limit, applied to the **summed DC power** of its arrays |
 | `SolarPowerPlant` | `calcs/SolarPowerPlant.py` | solXpect-compatible wrapper: one `PanelArray` with one `Inverter`, same `getPower` as the app |
+| `Site` | `calcs/Site.py` | One location with several inverters, each with several arrays; one weather request and one sun position calculation for all of them |
+| — | `calcs/app_import.py` | Turns the plants of a solXpect backup ZIP into `Site` objects |
+
+### Sites
+
+```python
+from datetime import datetime, timedelta, timezone
+from calcs.Inverter import Inverter
+from calcs.PanelArray import PanelArray
+from calcs.Site import Site
+
+site = Site(latitude=50.0, longitude=8.0, name="Home", inverters=[
+    Inverter(name="Hybrid", inverterEfficiency=97, inverterPowerLimit=8000, arrays=[
+        PanelArray(name="South", azimuthAngle=180, tiltAngle=30, cellsMaxPower=4000, ...),
+        PanelArray(name="East", azimuthAngle=90, tiltAngle=30, cellsMaxPower=2000, ...),
+    ]),
+    Inverter(name="Micro", inverterEfficiency=95, inverterPowerLimit=800, arrays=[
+        PanelArray(name="Balcony", azimuthAngle=200, tiltAngle=90, cellsMaxPower=800, ...),
+    ]),
+])
+
+start = datetime(2026, 6, 21, tzinfo=timezone.utc)
+result = site.forecast(start, start + timedelta(days=1), intervalSeconds=900)  # or 3600; historical=True for past days
+```
+
+`result` has one row per interval (index = end of the interval, UTC) with the mean power in W: `"<inverter>/<array>"` (DC per array), `"<inverter>"` (AC per inverter: efficiency and limit applied to the **sum** of its arrays) and `"total"`. Energy in Wh is power × interval length in hours. `Site.calculate(weather)` does the same for weather you already have.
+
+Settings are stored as one JSON file per inverter (with its arrays) plus `site.json` (name, location, beam mode): `site.save(folder)` / `Site.load(folder)`. Units are the same as in solXpect (percent for efficiencies, W, degrees).
+
+**Import from solXpect:** `sites_from_app_backup("solXpect.zip")` from `calcs/app_import.py` makes one site per location. Plants without "central inverter" get their own inverter; the central plants of a location share one inverter whose limit is the sum of their limits (as with the app's "summarize" option). Imported sites use `beamMode="app"` unless you pass `beamMode="substep"`.
 
 ### Beam modes
 
