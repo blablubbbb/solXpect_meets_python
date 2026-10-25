@@ -1,7 +1,14 @@
+import logging
 import math
 import numpy as np
 import pandas as pd
 import pvlib
+
+logger = logging.getLogger(__name__)
+
+# Ross model factor for the cell temperature (°C per W/m²), "not so well cooled" as in solXpect.
+# Typical values per mounting are listed in the README.
+DEFAULT_COOLING_FACTOR = 0.0342
 
 # How the direct (beam) part is averaged over the weather interval:
 #   "app":     angle of incidence once at the middle of the hour, multiplied by
@@ -50,16 +57,27 @@ class PanelArray:
     # Computes the DC power; the inverter is handled by the Inverter class.
     # latitude/longitude are only needed when the array is used on its own (getDcPower,
     # beamFactor); inside a Site the site's location is used.
-    def __init__(self, *, albedo, cellsMaxPower, cellsArea, cellsEfficiency,
-                 cellsTempCoeff, diffuseEfficiency, azimuthAngle, tiltAngle,
-                 shadingElevation, shadingOpacity, latitude=None, longitude=None,
+    # The panel size is given either as rated power (cellsMaxPower, W at 1000 W/m²) or as
+    # cellsArea + cellsEfficiency. If both are given, area and efficiency win (as in solXpect).
+    def __init__(self, *, albedo, cellsTempCoeff, diffuseEfficiency, azimuthAngle, tiltAngle,
+                 shadingElevation, shadingOpacity, cellsMaxPower=0, cellsArea=0, cellsEfficiency=0,
+                 cellsCoolingFactor=DEFAULT_COOLING_FACTOR, latitude=None, longitude=None,
                  beamMode="app", name=""):
         if beamMode not in BEAM_MODES:
             raise ValueError(f"beamMode must be one of {BEAM_MODES}, not {beamMode!r}")
+        usesArea = cellsArea > 0 and cellsEfficiency > 0
+        if not usesArea and not cellsMaxPower > 0:
+            raise ValueError(f"array {name!r}: give cellsMaxPower or cellsArea and cellsEfficiency")
+        if usesArea and cellsMaxPower > 0:
+            areaPower = cellsArea * cellsEfficiency / 100 * 1000
+            if abs(areaPower - cellsMaxPower) > 0.01 * cellsMaxPower:
+                logger.warning(f"array {name!r}: cellsMaxPower {cellsMaxPower:.0f} W is ignored, using "
+                               f"cellsArea x cellsEfficiency = {areaPower:.0f} W")
         # settings as given (units as in solXpect), for saving
         self.settings = dict(
             name=name, albedo=albedo, cellsMaxPower=cellsMaxPower, cellsArea=cellsArea,
             cellsEfficiency=cellsEfficiency, cellsTempCoeff=cellsTempCoeff,
+            cellsCoolingFactor=cellsCoolingFactor,
             diffuseEfficiency=diffuseEfficiency, azimuthAngle=azimuthAngle, tiltAngle=tiltAngle,
             shadingElevation=list(shadingElevation), shadingOpacity=list(shadingOpacity))
         self.name = name
@@ -70,6 +88,7 @@ class PanelArray:
         self.cellsArea = cellsArea  # m²
         self.cellsEfficiency = cellsEfficiency / 100.0  # fraction (e.g. 0.21)
         self.cellsTempCoeff = cellsTempCoeff / 100.0  # fraction per °C (e.g. -0.004)
+        self.cellsCoolingFactor = cellsCoolingFactor  # °C per W/m², see calcCellTemperature
         self.diffuseEfficiency = diffuseEfficiency / 100.0  # fraction (e.g. 0.85)
         self.azimuthAngle = azimuthAngle  # degrees, 0 = North, 90 = East
         self.tiltAngle = tiltAngle  # degrees from horizontal
@@ -112,7 +131,7 @@ class PanelArray:
             reflected
         )
 
-        cellTemperature = self.calcCellTemperature(ambientTemperature, totalIrradianceOnCell)
+        cellTemperature = self.calcCellTemperature(ambientTemperature, totalIrradianceOnCell, self.cellsCoolingFactor)
 
         # Calculate DC power (W)
         if self.cellsEfficiency != 0 and self.cellsArea != 0:
@@ -162,7 +181,9 @@ class PanelArray:
         ], axis=-1)
 
     @staticmethod
-    def calcCellTemperature(ambientTemperature, totalIrradiance):
+    def calcCellTemperature(ambientTemperature, totalIrradiance, coolingFactor=None):
         #Ross model: https://www.researchgate.net/publication/275438802_Thermal_effects_of_the_extended_holographic_regions_for_holographic_planar_concentrator
-        #assuming "not so well cooled" : 0.0342, implementation matches solXpect
-        return ambientTemperature + 0.0342 * totalIrradiance
+        #coolingFactor (°C per W/m²) depends on the mounting, default "not so well cooled": 0.0342 as in solXpect
+        if coolingFactor is None:
+            coolingFactor = DEFAULT_COOLING_FACTOR
+        return ambientTemperature + coolingFactor * totalIrradiance

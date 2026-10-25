@@ -78,6 +78,45 @@ def test_interval_checks():
         make_array("south_30", beamMode="substep").beamFactor(t, intervalSeconds=1000)
 
 
+def test_better_cooling_gives_more_power_and_default_is_unchanged():
+    t = epoch("2026-06-21T11:30")
+    sunny = WEATHER["sunny"]
+    default = make_array("south_30").getDcPower(epochTimeSeconds=t, **sunny)
+    explicit = make_array("south_30", cellsCoolingFactor=0.0342).getDcPower(epochTimeSeconds=t, **sunny)
+    free_standing = make_array("south_30", cellsCoolingFactor=0.0208).getDcPower(epochTimeSeconds=t, **sunny)
+    assert default == explicit
+    assert free_standing > default            # negative temperature coefficient: cooler cells, more power
+
+
+def test_rated_power_or_area_and_efficiency():
+    base = {k: PLANTS["south_30"][k] for k in ARRAY_KEYS if not k.startswith(("cellsMaxPower", "cellsArea", "cellsEfficiency"))}
+    t = epoch("2026-06-21T11:30")
+    sunny = WEATHER["sunny"]
+    by_power = PanelArray(cellsMaxPower=4500, latitude=LATITUDE, longitude=LONGITUDE, **base)
+    by_area = PanelArray(cellsArea=20, cellsEfficiency=22.5, latitude=LATITUDE, longitude=LONGITUDE, **base)
+    # 20 m² x 22.5 % = 4500 W at 1000 W/m², so both describe the same panels
+    assert by_power.getDcPower(epochTimeSeconds=t, **sunny) == pytest.approx(
+        by_area.getDcPower(epochTimeSeconds=t, **sunny))
+    with pytest.raises(ValueError):
+        PanelArray(cellsArea=20, **base)       # efficiency missing, no rated power
+
+
+def test_contradicting_size_uses_area_and_warns(caplog):
+    base = {k: PLANTS["south_30"][k] for k in ARRAY_KEYS if not k.startswith(("cellsMaxPower", "cellsArea", "cellsEfficiency"))}
+    t = epoch("2026-06-21T11:30")
+    sunny = WEATHER["sunny"]
+    with caplog.at_level("WARNING"):
+        consistent = PanelArray(name="ok", cellsMaxPower=4500, cellsArea=20, cellsEfficiency=22.5,
+                                latitude=LATITUDE, longitude=LONGITUDE, **base)
+    assert not caplog.records
+    with caplog.at_level("WARNING"):
+        conflict = PanelArray(name="roof", cellsMaxPower=1000, cellsArea=20, cellsEfficiency=22.5,
+                              latitude=LATITUDE, longitude=LONGITUDE, **base)
+    assert "roof" in caplog.text and "1000 W is ignored" in caplog.text
+    assert conflict.getDcPower(epochTimeSeconds=t, **sunny) == pytest.approx(
+        consistent.getDcPower(epochTimeSeconds=t, **sunny))
+
+
 def test_full_shading_blocks_beam_in_both_modes():
     full = [90] * 36
     opaque = [100] * 36

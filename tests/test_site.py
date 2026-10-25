@@ -189,3 +189,31 @@ def test_app_import_groups_plants_by_location_and_inverter(tmp_path):
     # the imported site can be saved and calculated
     home.save(tmp_path / "home")
     assert not Site.load(tmp_path / "home").calculate(constant_weather("2026-06-21", "sunny")).empty
+
+
+def test_app_import_can_select_plants_and_keep_them_separate(tmp_path):
+    # variants of one installation: same location, all "central"
+    zip_path = make_app_backup(tmp_path, [
+        app_row(1, "Vertical ", central=True, limit=8000),
+        app_row(2, "Horizontal", central=True, limit=8000),
+        app_row(3, "Test 30 deg", central=True, limit=8000),
+    ])
+    (vertical,) = sites_from_app_backup(zip_path, select=["Vertical"])
+    assert vertical.name == "Vertical"                               # trailing space removed
+    assert [i.inverterPowerLimit for i in vertical.inverters] == [8000]
+
+    separate = sites_from_app_backup(zip_path, select=[1, 2], combine=False)
+    assert [s.name for s in separate] == ["Vertical", "Horizontal"]
+    assert all(len(s.inverters) == 1 and s.inverters[0].inverterPowerLimit == 8000 for s in separate)
+
+    with pytest.raises(ValueError):
+        sites_from_app_backup(zip_path, select=["Missing"])
+
+
+def test_app_import_cleans_up_32_bit_float_noise(tmp_path):
+    row = list(app_row(1, "Roof", central=False, limit=8000))
+    row[APP_COLUMNS.index("cells_efficiency")] = 22.530000686645508
+    row[APP_COLUMNS.index("azimuth_angle")] = 161.2550048828125
+    (site,) = sites_from_app_backup(make_app_backup(tmp_path, [tuple(row)]))
+    settings = site.inverters[0].arrays[0].settings
+    assert (settings["cellsEfficiency"], settings["azimuthAngle"]) == (22.53, 161.255)

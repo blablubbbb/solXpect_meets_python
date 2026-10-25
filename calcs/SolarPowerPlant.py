@@ -1,7 +1,7 @@
 import math
 
 from .Inverter import Inverter
-from .PanelArray import PanelArray
+from .PanelArray import DEFAULT_COOLING_FACTOR, PanelArray
 
 class SolarPowerPlant:
         #Class should reproduce the java class by the same name in solXpect:
@@ -11,14 +11,15 @@ class SolarPowerPlant:
     def __init__(self, albedo, latitude, longitude, cellsMaxPower, cellsArea, cellsEfficiency,
                  cellsTempCoeff, diffuseEfficiency, inverterPowerLimit, inverterEfficiency,
                  isCentralInverter, azimuthAngle, tiltAngle, shadingElevation, shadingOpacity,
-                 beamMode="app"):
+                 beamMode="app", cellsCoolingFactor=DEFAULT_COOLING_FACTOR):
         self.latitude = latitude  # degrees
         self.longitude = longitude  # degrees
         self.isCentralInverter = isCentralInverter  # boolean
         self.panelArray = PanelArray(
             albedo=albedo, latitude=latitude, longitude=longitude,
             cellsMaxPower=cellsMaxPower, cellsArea=cellsArea, cellsEfficiency=cellsEfficiency,
-            cellsTempCoeff=cellsTempCoeff, diffuseEfficiency=diffuseEfficiency,
+            cellsTempCoeff=cellsTempCoeff, cellsCoolingFactor=cellsCoolingFactor,
+            diffuseEfficiency=diffuseEfficiency,
             azimuthAngle=azimuthAngle, tiltAngle=tiltAngle,
             shadingElevation=shadingElevation, shadingOpacity=shadingOpacity,
             beamMode=beamMode)
