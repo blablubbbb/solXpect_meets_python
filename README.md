@@ -29,7 +29,7 @@ The goal is to provide a transparent, reproducible, and physically aligned imple
 `PanelArray` (and `SolarPowerPlant`) take `beamMode`, which decides how the direct sunlight is averaged over the hour:
 
 - `"app"` (default): the angle of incidence is calculated once at the middle of the hour and multiplied by the shading averaged over 6 sub-steps of 10 minutes. This is exactly what solXpect does.
-- `"substep"`: angle of incidence and shading are calculated together for each sub-step, and their product is averaged. This is more accurate around sunrise/sunset and at shading edges, and slightly lower around noon (the average around a maximum is below the peak).
+- `"substep"`: angle of incidence and shading are calculated together every 7.5 minutes (8 sub-steps per hour), and their product is averaged. This is more accurate around sunrise/sunset and at shading edges, and slightly lower around noon (the average around a maximum is below the peak). It also works for 15-minute weather data (`intervalSeconds=900`, 2 sub-steps per quarter hour); the four quarter-hour results average exactly to the hourly result.
 
 ---
 

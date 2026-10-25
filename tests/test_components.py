@@ -61,6 +61,23 @@ def test_substep_is_close_to_app_and_slightly_lower_at_noon():
     assert substep < app
 
 
+@pytest.mark.parametrize("hour_mid", ["2026-03-20T06:30", "2026-06-21T11:30", "2026-03-20T17:30"])
+def test_four_quarter_hours_average_to_the_hour(hour_mid):
+    # substep mode uses the same points in time for 60 and 15 min intervals
+    array = make_array("east_60_shaded", beamMode="substep")
+    t = epoch(hour_mid)
+    quarters = [array.beamFactor(t + offset, intervalSeconds=900) for offset in (-1350, -450, 450, 1350)]
+    assert sum(quarters) / 4 == pytest.approx(array.beamFactor(t), rel=1e-12, abs=1e-15)
+
+
+def test_interval_checks():
+    t = epoch("2026-06-21T11:30")
+    with pytest.raises(ValueError):
+        make_array("south_30").beamFactor(t, intervalSeconds=900)  # app mode is hourly only
+    with pytest.raises(ValueError):
+        make_array("south_30", beamMode="substep").beamFactor(t, intervalSeconds=1000)
+
+
 def test_full_shading_blocks_beam_in_both_modes():
     full = [90] * 36
     opaque = [100] * 36

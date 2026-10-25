@@ -3,15 +3,19 @@ import numpy as np
 import pandas as pd
 import pvlib
 
-# Number of sub-steps per hour for shading (and, in "substep" mode, for the
-# angle of incidence): 10 min steps at xx:05 / xx:15 / xx:25 / xx:35 / xx:45 / xx:55
-NUM_STEPS = 6
-
-# How the direct (beam) part is averaged over the hour:
+# How the direct (beam) part is averaged over the weather interval:
 #   "app":     angle of incidence once at the middle of the hour, multiplied by
-#              the shading averaged over the sub-steps (as solXpect does it)
+#              the shading averaged over 6 sub-steps (as solXpect does it)
 #   "substep": angle of incidence and shading per sub-step, their product averaged
 BEAM_MODES = ("app", "substep")
+
+# "app" mode: 6 shading sub-steps per hour, 10 min steps at xx:05 / xx:15 / xx:25 / xx:35 / xx:45 / xx:55
+APP_STEPS = 6
+
+# "substep" mode: one sub-step per 7.5 min, in the middle of each step -> 8 per hour,
+# 2 per 15 min interval. Hourly and 15 min calculations use the same points in time,
+# so four quarter-hour results average exactly to the hourly result.
+SUBSTEP_SECONDS = 450
 
 
 class PanelArray:
@@ -43,16 +47,18 @@ class PanelArray:
             math.sin(math.radians(90 - tiltAngle))
         ])
 
-    def getDcPower(self, solarPowerNormal, solarPowerDiffuse, shortwaveRadiation, epochTimeSeconds, ambientTemperature):
+    def getDcPower(self, solarPowerNormal, solarPowerDiffuse, shortwaveRadiation, epochTimeSeconds, ambientTemperature,
+                   intervalSeconds=3600):
         # Inputs:
         # solarPowerNormal: W/m², direct irradiance normal to sun
         # solarPowerDiffuse: W/m², diffuse irradiance
         # shortwaveRadiation: W/m², total shortwave (used for albedo)
         # epochTimeSeconds: Unix timestamp, When you want to calculate the Energy between 9am and 10am you should give the function 9:30am
         # ambientTemperature: °C
+        # intervalSeconds: length of the weather interval, 3600 for hourly or 900 for 15 min data ("substep" mode only)
         efficiency = 0.0
         if solarPowerNormal > 0:
-            efficiency = self.beamFactor(epochTimeSeconds)
+            efficiency = self.beamFactor(epochTimeSeconds, intervalSeconds)
 
         # Calculate reflected radiation — flat plate equivalent
         tiltRad = math.radians(self.tiltAngle)
@@ -75,11 +81,19 @@ class PanelArray:
 
         return float(dcPower)
 
-    def beamFactor(self, epochTimeSeconds):
-        # Share of the direct normal irradiance that reaches the panel during the hour
+    def beamFactor(self, epochTimeSeconds, intervalSeconds=3600):
+        # Share of the direct normal irradiance that reaches the panel during the interval
         # around epochTimeSeconds (cosine of the angle of incidence, including shading).
-        interval = 3600 // NUM_STEPS  # seconds
-        stepEpochs = [epochTimeSeconds - ((NUM_STEPS - 1) * interval // 2) + j * interval for j in range(NUM_STEPS)]
+        if self.beamMode == "app":
+            if intervalSeconds != 3600:
+                raise ValueError("beamMode 'app' only supports hourly intervals")
+            numSteps = APP_STEPS
+        else:
+            if intervalSeconds % SUBSTEP_SECONDS:
+                raise ValueError(f"intervalSeconds must be a multiple of {SUBSTEP_SECONDS}")
+            numSteps = intervalSeconds // SUBSTEP_SECONDS
+        interval = intervalSeconds // numSteps  # seconds
+        stepEpochs = [epochTimeSeconds - ((numSteps - 1) * interval // 2) + j * interval for j in range(numSteps)]
 
         # One pvlib call for the middle of the hour and all sub-steps
         times = pd.to_datetime([epochTimeSeconds] + stepEpochs, unit="s", utc=True)
@@ -92,11 +106,11 @@ class PanelArray:
         shading = self.shadingFactors(solarAzimuth[1:], solarElevation[1:])
 
         if self.beamMode == "substep":
-            return float(np.sum(cosIncidence[1:] * shading) / NUM_STEPS)
+            return float(np.sum(cosIncidence[1:] * shading) / numSteps)
 
         efficiency = cosIncidence[0]
         if efficiency > 0:
-            efficiency *= np.sum(shading) / NUM_STEPS  # apply shading factor
+            efficiency *= np.sum(shading) / numSteps  # apply shading factor
         return float(efficiency)
 
     def shadingFactors(self, solarAzimuth, solarElevation):
