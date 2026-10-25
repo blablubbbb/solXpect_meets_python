@@ -14,8 +14,8 @@ def fetch_open_meteo_data(latitude, longitude, start_dt, end_dt):
         "latitude": latitude,
         "longitude": longitude,
         "hourly": "direct_normal_irradiance,diffuse_radiation,shortwave_radiation,temperature_2m",
-        "start": start_dt.strftime("%Y-%m-%dT%H:%M"),
-        "end": end_dt.strftime("%Y-%m-%dT%H:%M"),
+        "start_hour": start_dt.strftime("%Y-%m-%dT%H:%M"),  # both ends are included
+        "end_hour": end_dt.strftime("%Y-%m-%dT%H:%M"),
         "timezone": "UTC"
     }
 
@@ -43,7 +43,7 @@ def prepare_weather(dt, meteo_df):
     # Select weather data for the hour Note: For 12:40 the weather data from 12:00 is used
     row = meteo_df.loc[meteo_df["time"] == dt]
     if row.empty:
-        logger.warning(f"No weather data found for hour {dt_hour}")
+        logger.warning(f"No weather data found for hour {dt}")
         return None
 
     return {
