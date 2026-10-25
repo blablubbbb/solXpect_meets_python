@@ -52,6 +52,37 @@ def solarPositions(latitude, longitude, epochs):
             solarPosition["elevation"].to_numpy().reshape(epochs.shape))
 
 
+def panelNormal(azimuthAngle, tiltAngle):
+    # Unit vector perpendicular to the panel front, (east, north, up)
+    return np.array([
+        math.sin(math.radians(azimuthAngle)) * math.cos(math.radians(90 - tiltAngle)),
+        math.cos(math.radians(azimuthAngle)) * math.cos(math.radians(90 - tiltAngle)),
+        math.sin(math.radians(90 - tiltAngle))
+    ])
+
+
+def maxSunElevationPerBin(latitude, azimuthAngle, tiltAngle):
+    # For each of the 36 shading bins (azimuth 0-10°, 10-20°, ...): the highest elevation (°)
+    # the sun reaches in that direction during the year while it is above the horizon and in
+    # front of the panel; None if that never happens. Obstacles only matter below these values.
+    # Pure geometry over all declinations and hour angles, no time series needed.
+    declination = np.radians(np.linspace(-23.44, 23.44, 95))[:, None]
+    hourAngle = np.radians(np.linspace(-180, 180, 1441))[None, :]
+    lat = math.radians(latitude)
+    sinElevation = (math.sin(lat) * np.sin(declination)
+                    + math.cos(lat) * np.cos(declination) * np.cos(hourAngle))
+    elevation = np.degrees(np.arcsin(np.clip(sinElevation, -1, 1)))
+    azimuth = np.degrees(np.arctan2(
+        -np.cos(declination) * np.sin(hourAngle),
+        np.sin(declination) * math.cos(lat) - np.cos(declination) * np.cos(hourAngle) * math.sin(lat))) % 360
+    inFront = PanelArray.sunDirection(azimuth, elevation) @ panelNormal(azimuthAngle, tiltAngle) > 1e-9
+    visible = (elevation > 0) & inFront
+    bins = (azimuth // 10).astype(int) % 36
+    highest = np.full(36, -np.inf)
+    np.maximum.at(highest, bins[visible], elevation[visible])
+    return [float(e) if np.isfinite(e) else None for e in highest]
+
+
 class PanelArray:
     # One group of identical panels with the same orientation (e.g. one string).
     # Computes the DC power; the inverter is handled by the Inverter class.
@@ -96,12 +127,7 @@ class PanelArray:
         self.shadingOpacity = np.asarray(shadingOpacity, dtype=float)  # opacity (0–100) per 10° azimuth bin
         self.beamMode = beamMode
 
-        # Panel normal vector
-        self.normalPanel = np.array([
-            math.sin(math.radians(azimuthAngle)) * math.cos(math.radians(90 - tiltAngle)),
-            math.cos(math.radians(azimuthAngle)) * math.cos(math.radians(90 - tiltAngle)),
-            math.sin(math.radians(90 - tiltAngle))
-        ])
+        self.normalPanel = panelNormal(azimuthAngle, tiltAngle)
 
     def getDcPower(self, solarPowerNormal, solarPowerDiffuse, shortwaveRadiation, epochTimeSeconds, ambientTemperature,
                    intervalSeconds=3600):

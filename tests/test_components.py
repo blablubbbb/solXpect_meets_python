@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import pytest
 
 from calcs.Inverter import Inverter
-from calcs.PanelArray import PanelArray
+from calcs.PanelArray import PanelArray, maxSunElevationPerBin
 from tests.cases import LATITUDE, LONGITUDE, NO_SHADING, PLANTS, WEATHER
 
 ARRAY_KEYS = ("albedo", "cellsMaxPower", "cellsArea", "cellsEfficiency", "cellsTempCoeff",
@@ -115,6 +115,25 @@ def test_contradicting_size_uses_area_and_warns(caplog):
     assert "roof" in caplog.text and "1000 W is ignored" in caplog.text
     assert conflict.getDcPower(epochTimeSeconds=t, **sunny) == pytest.approx(
         consistent.getDcPower(epochTimeSeconds=t, **sunny))
+
+
+def test_max_sun_elevation_per_bin_for_a_vertical_south_facade():
+    highest = maxSunElevationPerBin(53.6, 171, 90)
+    # panel faces 171°: the sun can only reach it from 81° to 261°
+    assert all(v is None for v in highest[:8] + highest[27:])
+    assert all(v is not None for v in highest[9:26])
+    # noon sun at the summer solstice: 90 - 53.6 + 23.44
+    assert highest[17] == pytest.approx(59.84, abs=0.3)
+    assert highest[9] < highest[13] < highest[17]
+
+
+def test_max_sun_elevation_per_bin_for_tilted_and_southern_panels():
+    tilted = maxSunElevationPerBin(53.6, 180, 30)
+    # in summer the sun rises in the north-east, but behind a south facing 30° panel
+    assert tilted[4] is None and tilted[6] is not None
+    # in the southern hemisphere the sun stands in the north
+    sydney = maxSunElevationPerBin(-33.9, 0, 30)
+    assert sydney[0] > 75 and sydney[18] is None
 
 
 def test_full_shading_blocks_beam_in_both_modes():
