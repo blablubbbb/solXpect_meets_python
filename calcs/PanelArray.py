@@ -1,8 +1,8 @@
 import logging
 import math
 import numpy as np
-import pandas as pd
-import pvlib
+
+from .sunposition import sunPosition
 
 logger = logging.getLogger(__name__)
 
@@ -44,12 +44,8 @@ def stepEpochs(midEpochs, intervalSeconds, beamMode):
 
 
 def solarPositions(latitude, longitude, epochs):
-    # Solar azimuth and elevation (degrees) for an array of Unix timestamps, in one pvlib call
-    epochs = np.asarray(epochs)
-    times = pd.to_datetime(epochs.ravel(), unit="s", utc=True)
-    solarPosition = pvlib.solarposition.get_solarposition(times, latitude, longitude)
-    return (solarPosition["azimuth"].to_numpy().reshape(epochs.shape),
-            solarPosition["elevation"].to_numpy().reshape(epochs.shape))
+    # Solar azimuth and elevation (degrees) for an array of Unix timestamps (any shape)
+    return sunPosition(latitude, longitude, epochs)
 
 
 def panelNormal(azimuthAngle, tiltAngle):

@@ -1,4 +1,9 @@
-"""SolarPowerPlant.getPower must keep reproducing the recorded reference results."""
+"""SolarPowerPlant.getPower must keep reproducing the recorded reference results.
+
+The reference was recorded with pvlib's solar position (NREL SPA). The library now uses the
+NOAA algorithm (calcs/sunposition.py, no pvlib needed), which differs by about 0.01°; that
+changes the results by at most 0.03 % (0.3 W), hence the tolerance.
+"""
 import json
 from pathlib import Path
 
@@ -18,4 +23,4 @@ def test_get_power_matches_reference(plant_name, weather_name):
         for epoch in hour_midpoints(day):
             power = plant.getPower(epochTimeSeconds=epoch, **WEATHER[weather_name])
             expected = REFERENCE[case_key(plant_name, weather_name, epoch)]
-            assert power == pytest.approx(expected, rel=1e-9, abs=1e-9), (day, epoch)
+            assert power == pytest.approx(expected, rel=1e-3, abs=0.5), (day, epoch)

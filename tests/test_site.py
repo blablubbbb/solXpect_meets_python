@@ -54,7 +54,7 @@ def test_single_array_site_matches_solar_power_plant(plant_name):
     plant = SolarPowerPlant(**dict(plant_kwargs(plant_name), isCentralInverter=False))
     for weather_name in WEATHER:
         for day in DAYS:
-            result = site.calculate(constant_weather(day, weather_name))
+            result = site.calculate(constant_weather(day, weather_name)).to_dataframe()
             for end, ac in result["total"].items():
                 mid = int(end.timestamp()) - 1800
                 expected = plant.getPower(epochTimeSeconds=mid, **WEATHER[weather_name])
@@ -71,7 +71,7 @@ def mixed_site(beamMode="substep"):
 
 def test_inverter_limits_the_sum_of_its_arrays_only():
     site = mixed_site()
-    result = site.calculate(constant_weather("2026-06-21", "sunny"))
+    result = site.calculate(constant_weather("2026-06-21", "sunny")).to_dataframe()
     assert list(result.columns) == ["Deye/South", "Deye/East", "Deye", "Micro/Balcony", "Micro", "total"]
 
     deye_ac = (result["Deye/South"] + result["Deye/East"]) * 0.97
@@ -97,7 +97,7 @@ def test_save_and_load_give_the_same_results(tmp_path):
     assert sorted(p.name for p in tmp_path.iterdir()) == ["Deye.json", "Micro.json", "site.json"]
     loaded = Site.load(tmp_path)
     weather = constant_weather("2026-03-20", "sunny")
-    pd.testing.assert_frame_equal(loaded.calculate(weather), site.calculate(weather), check_like=True)
+    pd.testing.assert_frame_equal(loaded.calculate(weather).to_dataframe(), site.calculate(weather).to_dataframe(), check_like=True)
 
 
 def test_inverter_names_must_be_unique():
@@ -188,7 +188,7 @@ def test_app_import_groups_plants_by_location_and_inverter(tmp_path):
 
     # the imported site can be saved and calculated
     home.save(tmp_path / "home")
-    assert not Site.load(tmp_path / "home").calculate(constant_weather("2026-06-21", "sunny")).empty
+    assert not Site.load(tmp_path / "home").calculate(constant_weather("2026-06-21", "sunny")).to_dataframe().empty
 
 
 def test_app_import_can_select_plants_and_keep_them_separate(tmp_path):

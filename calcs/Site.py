@@ -4,13 +4,42 @@ from datetime import timedelta
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 
 from .Inverter import Inverter
 from .PanelArray import PanelArray, solarPositions, stepEpochs
 from .forecast import fetch_open_meteo_data
 
 SITE_FILE = "site.json"
+
+
+class SiteResult:
+    # Result of Site.calculate: mean power (W) per interval.
+    #   times:   end of each interval, Unix timestamps (seconds, UTC)
+    #   columns: "<inverter>/<array>" (DC), "<inverter>" (AC), "total" (AC) -> numpy arrays
+    def __init__(self, times, columns):
+        self.times = times
+        self.columns = columns
+
+    def __getitem__(self, name):
+        return self.columns[name]
+
+    def __len__(self):
+        return len(self.times)
+
+    def to_dataframe(self):
+        # The same as a pandas DataFrame indexed by the interval end (needs pandas)
+        import pandas as pd
+        return pd.DataFrame(self.columns, index=pd.to_datetime(self.times, unit="s", utc=True))
+
+
+def _epochSeconds(times):
+    # Interval ends as Unix seconds; accepts Unix seconds, numpy datetime64 or datetime objects
+    times = np.asarray(times)
+    if times.dtype.kind in "iuf":
+        return times.astype(np.int64)
+    if times.dtype.kind == "M":
+        return times.astype("datetime64[s]").astype(np.int64)
+    return np.array([int(t.timestamp()) for t in times], dtype=np.int64)
 
 
 class Site:
@@ -36,20 +65,21 @@ class Site:
                 raise ValueError(f"array names of inverter {inv.name!r} must be unique: {arrayNames}")
 
     def calculate(self, weather, intervalSeconds=3600):
-        # weather: DataFrame as from fetch_open_meteo_data ("time" = end of interval, UTC).
-        # Returns a DataFrame indexed by the end of each interval with the mean power (W) over it:
+        # weather: as from fetch_open_meteo_data ("time" = end of interval, UTC); a pandas
+        # DataFrame with the same columns works too.
+        # Returns a SiteResult with the mean power (W) over each interval:
         #   "<inverter>/<array>"  DC power of each array
         #   "<inverter>"          AC power of each inverter (efficiency and limit applied to the summed DC)
         #   "total"               AC power of the whole site
-        times = pd.DatetimeIndex(pd.to_datetime(weather["time"], utc=True))
-        midEpochs = times.asi8 // 10**9 - intervalSeconds // 2
+        times = _epochSeconds(weather["time"])
+        midEpochs = times - intervalSeconds // 2
         epochs = stepEpochs(midEpochs, intervalSeconds, self.beamMode)
         solarAzimuth, solarElevation = solarPositions(self.latitude, self.longitude, epochs)
 
-        solarPowerNormal = weather["direct_normal_irradiance"].to_numpy(dtype=float)
-        solarPowerDiffuse = weather["diffuse_radiation"].to_numpy(dtype=float)
-        shortwaveRadiation = weather["shortwave_radiation"].to_numpy(dtype=float)
-        ambientTemperature = weather["temperature_2m"].to_numpy(dtype=float)
+        solarPowerNormal = np.asarray(weather["direct_normal_irradiance"], dtype=float)
+        solarPowerDiffuse = np.asarray(weather["diffuse_radiation"], dtype=float)
+        shortwaveRadiation = np.asarray(weather["shortwave_radiation"], dtype=float)
+        ambientTemperature = np.asarray(weather["temperature_2m"], dtype=float)
 
         columns = {}
         total = np.zeros(len(times))
@@ -64,7 +94,7 @@ class Site:
             columns[inv.name] = ac
             total = total + ac
         columns["total"] = total
-        return pd.DataFrame(columns, index=times)
+        return SiteResult(times, columns)
 
     def forecast(self, start_dt, end_dt, intervalSeconds=3600, historical=False):
         # Fetch the weather for start_dt..end_dt (UTC) and calculate the site's power for it

@@ -1,6 +1,6 @@
 # ☀️ solXpect_meets_python
 
-This Python library reproduces the energy output calculations of the original `SolarPowerPlant.java` class from [solXpect](https://github.com/woheller69/solxpect), with one minor difference: it uses a different package (`pvlib`) to calculate the sun's position.
+This Python library reproduces the energy output calculations of the original `SolarPowerPlant.java` class from [solXpect](https://github.com/woheller69/solxpect), with one minor difference: the sun's position comes from the NOAA solar position algorithm (`calcs/sunposition.py`, plain numpy, within about 0.02° of pvlib's NREL SPA).
 
 The goal is to provide a transparent, reproducible, and physically aligned implementation of solXpect's solar energy model — useful for validation, experimentation, and integration into larger forecasting workflows.
 
@@ -74,7 +74,7 @@ start = datetime(2026, 6, 21, tzinfo=timezone.utc)
 result = site.forecast(start, start + timedelta(days=1), intervalSeconds=900)  # or 3600; historical=True for past days
 ```
 
-`result` has one row per interval (index = end of the interval, UTC) with the mean power in W: `"<inverter>/<array>"` (DC per array), `"<inverter>"` (AC per inverter: efficiency and limit applied to the **sum** of its arrays) and `"total"`. Energy in Wh is power × interval length in hours. `Site.calculate(weather)` does the same for weather you already have.
+`result` is a `SiteResult`: `result.times` are the ends of the intervals (Unix seconds, UTC), and `result["<name>"]` gives the mean power in W per interval as a numpy array, for `"<inverter>/<array>"` (DC per array), `"<inverter>"` (AC per inverter: efficiency and limit applied to the **sum** of its arrays) and `"total"`. Energy in Wh is power × interval length in hours. `result.to_dataframe()` returns the same as a pandas DataFrame (needs pandas). `Site.calculate(weather)` does the same for weather you already have; `fetch_open_meteo_data` returns the weather as a dict of numpy arrays (`"time"` in Unix seconds), and a pandas DataFrame with the same columns works too.
 
 Settings are stored as one JSON file per inverter (with its arrays) plus `site.json` (name, location, beam mode): `site.save(folder)` / `Site.load(folder)`. Units are the same as in solXpect (percent for efficiencies, W, degrees).
 
@@ -99,7 +99,7 @@ pip install pytest
 python -m pytest
 ```
 
-`tests/reference_legacy.json` holds results of the original implementation for made-up plants and synthetic weather; the tests check that `beamMode="app"` still reproduces them. Regenerate it only on purpose with `python -m tests.make_reference`.
+`tests/reference_legacy.json` holds results of the original implementation (with pvlib's solar position) for made-up plants and synthetic weather; the tests check that `beamMode="app"` still reproduces them within 0.1 % (the NOAA solar position changes them by at most 0.03 %). Regenerate it only on purpose with `python -m tests.make_reference`. `tests/test_sunposition.py` compares the solar position with pvlib directly; it is skipped when pvlib isn't installed.
 
 ---
 
@@ -113,10 +113,13 @@ python -m pytest
 
 | Library         | Purpose                                      |
 |----------------|----------------------------------------------|
-| `pvlib`         | Solar position calculation                  |
+| `numpy`         | All calculations, including the solar position |
 | `requests`      | API calls to Open-Meteo                     |
-| `sqlite3`       | Reading plant configuration from ZIP        |
-| `pandas`        | Data handling and time series manipulation  |
+| `sqlite3`       | Reading plant configuration from ZIP (standard library) |
+| `pandas`        | Optional: `SiteResult.to_dataframe()`, tests |
+| `pvlib`         | Optional: only for the solar position test  |
+
+The calculation needs only numpy and requests, which keeps the memory use low (about 25 MB instead of about 110 MB with pandas and pvlib), e.g. for Home Assistant on a small NAS.
 
 ---
 

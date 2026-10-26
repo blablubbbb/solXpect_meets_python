@@ -1,8 +1,7 @@
 import logging
 from datetime import datetime, timedelta, timezone
+import numpy as np
 import requests
-import pandas as pd
-import pvlib
 
 from .SolarPowerPlant import SolarPowerPlant
 
@@ -11,10 +10,12 @@ logger = logging.getLogger(__name__)
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 # Archive of past forecast runs, same parameters and also 15 min data
 HISTORICAL_FORECAST_URL = "https://historical-forecast-api.open-meteo.com/v1/forecast"
+WEATHER_VARIABLES = ("direct_normal_irradiance", "diffuse_radiation", "shortwave_radiation", "temperature_2m")
 
 def fetch_open_meteo_data(latitude, longitude, start_dt, end_dt, intervalSeconds=3600, historical=False):
-    # Weather from Open-Meteo, one row per interval. "time" is the end of the interval (UTC);
-    # the radiation values are the mean over the preceding interval.
+    # Weather from Open-Meteo as a dict of numpy arrays, one value per interval:
+    #   "time": end of the interval as Unix timestamp (seconds, UTC); the radiation values
+    #   are the mean over the preceding interval; plus the WEATHER_VARIABLES.
     # intervalSeconds: 3600 (hourly) or 900 (15 min data, "minutely_15")
     # historical: use the archive of past forecasts instead of the current forecast
     if intervalSeconds == 3600:
@@ -28,7 +29,7 @@ def fetch_open_meteo_data(latitude, longitude, start_dt, end_dt, intervalSeconds
     params = {
         "latitude": latitude,
         "longitude": longitude,
-        resolution: "direct_normal_irradiance,diffuse_radiation,shortwave_radiation,temperature_2m",
+        resolution: ",".join(WEATHER_VARIABLES),
         f"start_{rangeSuffix}": start_dt.strftime("%Y-%m-%dT%H:%M"),  # both ends are included
         f"end_{rangeSuffix}": end_dt.strftime("%Y-%m-%dT%H:%M"),
         "timezone": "UTC"
@@ -49,23 +50,27 @@ def fetch_open_meteo_data(latitude, longitude, start_dt, end_dt, intervalSeconds
     else:
         logger.warning(f"⚠️ No '{resolution}' field in API response")
 
-    df = pd.DataFrame(data[resolution])
-    df["time"] = pd.to_datetime(df["time"], utc=True)
-    return df
+    values = data.get(resolution, {})
+    weather = {"time": np.array(values.get("time", []), dtype="datetime64[s]").astype(np.int64)}
+    for name in WEATHER_VARIABLES:
+        # missing values (null) become NaN
+        weather[name] = np.array(values.get(name, []), dtype=float)
+    return weather
 
 
-def prepare_weather(dt, meteo_df):
+def prepare_weather(dt, weather):
     # Select weather data for the hour Note: For 12:40 the weather data from 12:00 is used
-    row = meteo_df.loc[meteo_df["time"] == dt]
-    if row.empty:
+    rows = np.flatnonzero(weather["time"] == int(dt.timestamp()))
+    if not len(rows):
         logger.warning(f"No weather data found for hour {dt}")
         return None
 
+    row = rows[0]
     return {
-        "solar_power_normal": row["direct_normal_irradiance"].values[0],
-        "solar_power_diffuse": row["diffuse_radiation"].values[0],
-        "shortwave_radiation": row["shortwave_radiation"].values[0],
-        "ambient_temperature": row["temperature_2m"].values[0]
+        "solar_power_normal": weather["direct_normal_irradiance"][row],
+        "solar_power_diffuse": weather["diffuse_radiation"][row],
+        "shortwave_radiation": weather["shortwave_radiation"][row],
+        "ambient_temperature": weather["temperature_2m"][row]
     }
 
 def forecast_next_24_hours(plant: SolarPowerPlant, city_name: str):
@@ -73,7 +78,7 @@ def forecast_next_24_hours(plant: SolarPowerPlant, city_name: str):
     end_dt = start_dt + timedelta(hours=24)
     latitude = plant.latitude
     longitude = plant.longitude 
-    meteo_df = fetch_open_meteo_data(latitude, longitude, start_dt, end_dt)
+    weather = fetch_open_meteo_data(latitude, longitude, start_dt, end_dt)
 
     logger.debug(f"📍 Forecasting for {city_name} ({latitude}, {longitude})")
     results = []
@@ -86,7 +91,7 @@ def forecast_next_24_hours(plant: SolarPowerPlant, city_name: str):
 
         dt_step = hour_start + timedelta(minutes=30) #Immitate solXpect implementataion
         hour_end = hour_start + timedelta(hours=1)
-        inputs = prepare_weather(hour_end, meteo_df)
+        inputs = prepare_weather(hour_end, weather)
 
         if inputs is None:
             logger.warning(f"{dt_step.strftime('%Y-%m-%d %H:%M')} – No data available")
